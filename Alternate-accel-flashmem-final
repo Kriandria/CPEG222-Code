@@ -1,0 +1,420 @@
+/*==================================CPEG222=============================
+ 
+ * Program: CPEG 222 Project 4
+ * Authors: Mark DeSeta and Luis Marcano
+ * Date: 10/04/2017* 
+ * Description: This program reads the accelerometer on the board in values of G and displays the X, Y, and Z componets on the LCD. Pressing BTNL
+ * or BTNR will cycle the X,Y, and Z values onto the SSD and LCD. BTNU and BTND will increase the max G range from 2 to 4 to 8. Switch 1 will erase all data on the SPI flash and store 30 
+ * X, Y and Z data points. Switch 2 will allow you to access this data and scroll through the 30 values using BTNU and BTND. Having both switches on
+ * at the same time will do nothing.
+ * 
+ * 
+ *  ========================================================================*/
+#include <xc.h>
+#include <sys/attribs.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <plib.h>
+#include "lcd.h"
+#include "swt.h"
+#include "config.h" 
+#include "ssd.h"
+#include "btn.h"
+#include "acl.h"
+#include "adc.h"
+#include "aic.h"
+#include "rgbled.h"
+#include "spiflash.h"
+#include "led.h"
+
+
+#pragma config FPLLIDIV = DIV_2
+#pragma config FPLLMUL = MUL_20
+#pragma config FPLLODIV = DIV_1
+#pragma config FNOSC = PRIPLL        //configure system clock 80 MHz
+#pragma config FSOSCEN = OFF
+#pragma config POSCMOD = XT
+#pragma config FPBDIV = DIV_2        //configure peripheral bus clock to 10 MHz
+
+#define SYS_FREQ  (800000000L)  // 80 MHz sys Clock
+#define FOSC 80E6
+#define CORE_TICK_PERIOD (FOSC/2)
+#define DELAY   39062        // 1000ms 
+
+#define NUMBER_DATA_POINTS   30  //Number of data points to store
+#define SPIFLASH_PROG_ADDRX  0x100
+#define SPIFLASH_PROG_ADDRY  0x500
+#define SPIFLASH_PROG_ADDRZ  0x900
+#define SPIFLASH_PROG_SIZE  2*NUMBER_DATA_POINTS*sizeof(unsigned char)
+
+void delay_ms(int ms) {
+
+    int i, counter;
+    for (counter = 0; counter < ms; counter++) //sets up counter to track which LED will light up based off ms time
+    {
+        for (i = 0; i < 1023; i++) {
+        } // delay for aprox. 1 milisecond
+
+    }
+}
+
+char strMsgX[80];
+char strMsgY[80];
+char strMsgZ[80];
+char strMsg[80];
+
+int valPot;
+int valPotms;
+int state = 0; //1-5 (C, L, R, U, D)
+int buttonLock = 0;
+int xyzState = 1;
+int xyzCount = 100000;
+int val1;
+int X1;
+int Y1;
+int Z1;
+int thous = 0;
+int hunds = 0;
+int tens = 0;
+int ones = 0;
+int sens = 2;
+int buttonsCheck = 0;
+int statusCheck = 0;
+int switch1;
+int arrayCheck;
+int arrayCounter;
+
+unsigned char SSD1 = 0;
+unsigned char SSD2 = 0;
+unsigned char SSD3 = 0;
+unsigned char SSD4 = 0;
+unsigned char rgRawVals[6];
+unsigned char XValsIn[60];
+unsigned char XValsOut[60];
+unsigned char YValsIn[60];
+unsigned char YValsOut[60];
+unsigned char ZValsIn[60];
+unsigned char ZValsOut[60];
+
+float X;
+float Y;
+float Z;
+float rgGVals[3];
+
+short int writeCheck;
+
+void __ISR(_CORE_TIMER_VECTOR, ipl5) _CoreTimerHandler(void) {
+    // clear the interrupt flag
+    mCTClearIntFlag();
+
+    UpdateCoreTimer((valPotms * CORE_TICK_PERIOD) / 1000); //100 ms
+
+    ACL_ReadGValues(rgGVals);
+    ACL_ReadRawValues(rgRawVals);
+    if (statusCheck == 0) {
+        X = rgGVals[0];
+        Y = rgGVals[1];
+        Z = rgGVals[2];
+    }
+
+    if (switch1 == 1) {
+        arrayCounter += 2;
+    }
+
+    X1 = (((unsigned short) rgRawVals[0]) << 4) + (rgRawVals[1] >> 4);
+    Y1 = (((unsigned short) rgRawVals[2]) << 4) + (rgRawVals[3] >> 4);
+    Z1 = (((unsigned short) rgRawVals[4]) << 4) + (rgRawVals[5] >> 4);
+
+}
+
+int main(void) {
+    DDPCONbits.JTAGEN = 0;
+    BTN_Init(); //initialize the buttons
+    LCD_Init(); //initialize the LCD
+    AIC_Init(); //initialize the potentiometer
+    ACL_Init(); //initialize the LED
+    SSD_Init();
+    SWT_Init();
+    RGBLED_Init();
+    LED_Init();
+    SPIFLASH_Init();
+
+    LCD_WriteStringAtPos("Team 8 ", 0, 0); // write string on the first line, first position
+    OpenCoreTimer(CORE_TICK_PERIOD); //configure the core timer
+    mConfigIntCoreTimer(CT_INT_ON | CT_INT_PRIOR_5); //set core timer interrupt level = 2
+    INTEnableSystemMultiVectoredInt(); //enable multi-vector interrupts
+    LCD_WriteStringAtPos("SENS: 2G", 0, 8);
+
+    while (1) {
+
+        if (buttonsCheck = 1) {
+            if (BTN_GetValue('C') && !buttonLock) { //check if button C was pressed
+                state = 1; //change the state
+                buttonLock = 1; //lock the button
+            } else if (BTN_GetValue('L') && !buttonLock) { // check if button L was pressed
+                state = 2; //change state to 2
+                buttonLock = 1; //lock the button
+                xyzCount = xyzCount - 1;
+            } else if (BTN_GetValue('R') && !buttonLock) { // check if button R was pressed
+                state = 3; //change the state
+                buttonLock = 1; // lock the button
+                xyzCount = xyzCount + 1;
+            } else if (BTN_GetValue('U') && !buttonLock) { // check if button U was pressed
+                state = 4; //change the state
+                buttonLock = 1; //lock the button
+                sens = sens * 2;
+            } else if (BTN_GetValue('D') && !buttonLock) { //check if button D was pressed
+                state = 5; //change the state
+                buttonLock = 1; //lock the button
+                sens = sens / 2;
+            }
+            if (buttonLock && !BTN_GetValue('C') && !BTN_GetValue('L') && !BTN_GetValue('R') && !BTN_GetValue('U') && !BTN_GetValue('D')) { // check if no button is pressed
+                delay_ms(50); // delay 50 ms
+                buttonLock = 0; //unlock buttons if all off
+            }
+        }
+
+        if (state == 2) {
+            if (xyzCount % 3 == 1) {
+                xyzState = 1;
+            }
+            if (xyzCount % 3 == 2) {
+                xyzState = 2;
+            }
+            if (xyzCount % 3 == 0) {
+                xyzState = 3;
+            }
+        }
+        if (state == 3) {
+            if (xyzCount % 3 == 1) {
+                xyzState = 1;
+            }
+            if (xyzCount % 3 == 2) {
+                xyzState = 2;
+            }
+            if (xyzCount % 3 == 0) {
+                xyzState = 3;
+            }
+        }
+        if (state == 4) {
+            if (sens == 2) {
+                LCD_WriteStringAtPos("SENS: 2G", 0, 8);
+                ACL_SetRange(0);
+            }
+            if (sens == 4) {
+                LCD_WriteStringAtPos("SENS: 4G", 0, 8);
+                ACL_SetRange(1);
+            }
+            if (sens == 8) {
+                LCD_WriteStringAtPos("SENS: 8G", 0, 8);
+                ACL_SetRange(2);
+            }
+        }
+        if (state == 5) {
+            if (sens == 2) {
+                LCD_WriteStringAtPos("SENS: 2G", 0, 8);
+                ACL_SetRange(0);
+            }
+            if (sens == 4) {
+                LCD_WriteStringAtPos("SENS: 4G", 0, 8);
+                ACL_SetRange(1);
+            }
+            if (sens == 8) {
+                LCD_WriteStringAtPos("SENS: 8G", 0, 8);
+                ACL_SetRange(2);
+            }
+        }
+
+        //RGBLED_SetValue(0xFF, 200, 200);
+        if (X > Y && X > Z) {
+            RGBLED_SetValue(0xFF, 0, 0);
+        }
+        if (Y > X && Y > Z) {
+            RGBLED_SetValue(0, 0xFF, 0);
+        }
+        if (Z > Y && Z > X) {
+            RGBLED_SetValue(0, 0, 0xFF);
+        }
+
+
+        if (writeCheck) {
+            Write();
+            writeCheck = 0;
+        }
+        if ((SWT_GetValue(2) == 1)&& !(SWT_GetValue(1) == 1)) {
+            statusCheck = 1;
+            Read();
+        } else {
+            if (SWT_GetValue(1) == 0) {
+                switch1 = 1;
+                LED_SetValue(1, 0);
+            }
+            LED_SetValue(2, 0);
+
+            if ((switch1 == 1)&&(SWT_GetValue(1) == 1)) {
+                writeCheck = 1;
+            }
+
+            buttonsCheck = 1;
+            displayPos();
+
+            valPot = AIC_Val(); //check the potentiometer value
+            valPotms = ((valPot)* 900 / 1023) + 100; // convert the value to ms
+        }
+    }
+}
+
+void writeSSD(float val) {
+    val1 = val * 1000;
+    if (val1 >= 0) {
+        thous = val1 / 1000;
+        hunds = ((val1 % 1000) / 100);
+        tens = (val1 % 100 / 10);
+        ones = (val1 % 10);
+        SSD_WriteDigits(ones, tens, hunds, thous, 0, 0, 0, 1);
+    } else if (val1 < 0) {
+        val1 = abs(val1);
+        thous = val1 / 1000;
+        hunds = ((val1 % 1000) / 100);
+        tens = (val1 % 100 / 10);
+        SSD_WriteDigits(tens, hunds, thous, 17, 0, 0, 1, 0);
+    }
+}
+
+void readButtonsRead(void) {
+    if ((BTN_GetValue('U') || BTN_GetValue('D') || BTN_GetValue('L') || BTN_GetValue('R'))&&!buttonLock) { //button debouncing
+        buttonLock = 1;
+        if (BTN_GetValue('U') == 1) {
+            if (arrayCheck < 60) {
+                arrayCheck += 2;
+            }
+        }
+        if (BTN_GetValue('D') == 1) {
+            if (arrayCheck > 0) {
+                arrayCheck -= 2;
+            }
+        }
+        if (BTN_GetValue('L') == 1) {
+            if (xyzState == 1) {
+                xyzState == 3;
+            } else if (xyzState == 2) {
+                xyzState == 1;
+            } else if (xyzState == 3) {
+                xyzState == 2;
+            }
+        }
+        if (BTN_GetValue('R') == 1) {
+            if (xyzState == 1) {
+                xyzState == 1;
+            } else if (xyzState == 2) {
+                xyzState == 3;
+            } else if (xyzState == 3) {
+                xyzState == 1;
+            }
+        }
+    } else if (((!BTN_GetValue('L'))&&(!BTN_GetValue('U'))&&(!BTN_GetValue('D'))&&(!BTN_GetValue('R'))) && buttonLock) {
+        delay_ms(250);
+        buttonLock = 0;
+    }
+}
+
+void Read(void) {
+    LED_SetValue(2, 1);
+    SPIFLASH_Read(SPIFLASH_PROG_ADDRX, XValsOut, SPIFLASH_PROG_SIZE);
+    SPIFLASH_Read(SPIFLASH_PROG_ADDRY, YValsOut, SPIFLASH_PROG_SIZE);
+    SPIFLASH_Read(SPIFLASH_PROG_ADDRZ, ZValsOut, SPIFLASH_PROG_SIZE);
+    while (statusCheck) {
+
+        X = ACL_ConvertRawToValueG(XValsOut + arrayCheck);
+        Y = ACL_ConvertRawToValueG(YValsOut + arrayCheck);
+        Z = ACL_ConvertRawToValueG(ZValsOut + arrayCheck);
+
+        LCD_WriteStringAtPos("Team 8 ", 0, 0);
+        LCD_WriteStringAtPos("SET: ", 0, 8);
+        sprintf(strMsg, "%d    ", (arrayCheck / 2));
+        LCD_WriteStringAtPos(strMsg, 0, 13);
+        readButtonsRead();
+        displayPos();
+        if (SWT_GetValue(2) == 0) {
+            statusCheck = 0;
+            LCD_WriteStringAtPos("SENS: 2G", 0, 8);
+        }
+        if (SWT_GetValue(1) == 1) {
+            statusCheck = 0;
+        }
+    }
+}
+
+void Write(void) {
+    LED_SetValue(1, 1);
+
+    arrayCounter = 0;
+
+    //Puts XYZ vals in arrays that will be put in flash
+    while (arrayCounter < 60) {
+        XValsIn[arrayCounter] = rgRawVals[0];
+        XValsIn[arrayCounter + 1] = rgRawVals[1];
+
+        YValsIn[arrayCounter] = rgRawVals[2];
+        YValsIn[arrayCounter + 1] = rgRawVals[3];
+
+        ZValsIn[arrayCounter] = rgRawVals[4];
+        ZValsIn[arrayCounter + 1] = rgRawVals[5];
+
+        displayPos();
+        buttonsCheck = 1;
+
+    }
+    SSD_WriteDigits(18, 18, 18, 18, 0, 0, 0, 0);
+    RGBLED_SetValue(0, 0, 0);
+
+    LCD_WriteStringAtPos("ERASING FLASH   ", 0, 0);
+    LCD_WriteStringAtPos("                ", 1, 0);
+    SPIFLASH_EraseAll();
+
+    LCD_WriteStringAtPos("WRITING FLASH   ", 0, 0);
+    LCD_WriteStringAtPos("                ", 1, 0);
+    delay_ms(100); ////
+    SPIFLASH_ProgramPage(SPIFLASH_PROG_ADDRX, XValsIn, SPIFLASH_PROG_SIZE);
+    SPIFLASH_ProgramPage(SPIFLASH_PROG_ADDRY, YValsIn, SPIFLASH_PROG_SIZE);
+    SPIFLASH_ProgramPage(SPIFLASH_PROG_ADDRZ, ZValsIn, SPIFLASH_PROG_SIZE);
+
+    LCD_WriteStringAtPos("WRITING FINISHED", 0, 0);
+    LCD_WriteStringAtPos("                ", 1, 0);
+    delay_ms(1000);
+
+    arrayCounter = 0;
+    switch1 = 0;
+    LCD_WriteStringAtPos("Team 8 ", 0, 0);
+    LCD_WriteStringAtPos("SENS: 2G", 0, 8);
+}
+
+void displayPos(void) {
+    if (xyzState == 1) {
+        sprintf(strMsgX, "X:%6.3f", X);
+        LCD_WriteStringAtPos(strMsgX, 1, 0);
+
+        sprintf(strMsgY, "Y:%6.3f", Y);
+        LCD_WriteStringAtPos(strMsgY, 1, 8);
+
+        writeSSD(Z);
+    }
+    if (xyzState == 2) {
+        sprintf(strMsgX, "X:%6.3f", X);
+        LCD_WriteStringAtPos(strMsgX, 1, 8);
+
+        sprintf(strMsgZ, "Z:%6.3f", Z);
+        LCD_WriteStringAtPos(strMsgZ, 1, 0);
+
+        writeSSD(Y);
+    }
+    if (xyzState == 3) {
+        sprintf(strMsgZ, "Z:%6.3f", Z);
+        LCD_WriteStringAtPos(strMsgZ, 1, 8);
+
+        sprintf(strMsgY, "Y:%6.3f", Y);
+        LCD_WriteStringAtPos(strMsgY, 1, 0);
+
+        writeSSD(X);
+    }
+}
