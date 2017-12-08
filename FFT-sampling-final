@@ -1,0 +1,258 @@
+#ifndef _SUPPRESS_PLIB_WARNING          //suppress the plib warning during compiling
+#define _SUPPRESS_PLIB_WARNING
+#endif
+ 
+#include <stdio.h>
+#include <math.h>
+#include <xc.h>
+#include <plib.h>
+#include <sys/attribs.h>
+#include "utils.h" 
+#include "config.h" 
+#include "led.h" 
+// Dylan Leh    Dylan Martin team 38
+
+#ifndef _SUPPRESS_PLIB_WARNING          //suppress the plib warning during compiling
+#define _SUPPRESS_PLIB_WARNING
+#endif
+ 
+#include <stdio.h>
+#include <math.h>
+#include <xc.h>
+#include <plib.h>
+#include <sys/attribs.h>
+#include "utils.h" 
+#include "config.h" 
+#include "led.h" 
+#include "lcd.h" 
+//#include "aic.h" 
+#include "adc.h" 
+#include "swt.h" 
+#include "mic.h" 
+//#include "audio.h" 
+#include "adc.h"
+#include "dsplib_dsp.h"
+#include "fftc.h"
+#include "rgbled.h"
+ 
+#define N 4096 // Number of samples that make up FFT (2^n for FFT)
+#define log2N 12
+#define fftc fft16c4096
+int16c din[N];          //this buffer real part. contains the input of FFF, i.e, the audio signal 
+int16c scratch[N];  //intermediate array
+int16c dout[N];      //this buffer contain the output of FFT
+
+#pragma config JTAGEN = OFF    //Setting JTAG off for LEDs
+#pragma config FWDTEN = OFF  
+ 
+#pragma config FPLLIDIV = DIV_2         // PLL Input Divider (2x Divider)
+#pragma config FPLLMUL = MUL_20         // PLL Multiplier (20x Multiplier)
+#pragma config FPLLODIV = DIV_1         // System PLL Output Clock Divider (PLL Divide by 1)
+#pragma config FNOSC = PRIPLL           // Oscillator Selection Bits (Primary Osc w/PLL (XT+,HS+,EC+PLL))
+#pragma config FSOSCEN = OFF            // Secondary Oscillator Enable (Disabled)
+#pragma config POSCMOD = XT             // Primary Oscillator Configuration (XT osc mode)
+#pragma config FPBDIV = DIV_2           // Peripheral Clock Divisor (Pb_Clk is Sys_Clk/2)
+
+ 
+ 
+/* -------------Definitions------------------------------------ */
+#define SYS_FREQ    (80000000L) // 80MHz system clock
+#define FOSC 80000000
+#define SAMPLE_RATE 2E4 // 20 kHz
+#define CORE_TICK_PERIOD (FOSC/100)
+ 
+enum mode {PAUSE,SAMPLE};
+int mode = PAUSE;
+int time = 0;
+int delay = 200;
+unsigned long int maxFreq = 0;
+unsigned long int frequency = 0;
+char str[80];
+char str1[80];
+double array[64];
+int i, j, k, max, x, location = 0;
+unsigned int micVal = 0;
+int delayval=0;
+int magnitude;
+int hMagnitude = 0;
+int indexMagnitude = 0;
+int sCounter = 0;
+int fMax = 0;
+float freqArray[N];
+int dig1, dig2, dig3, dig4 = 0;
+ 
+/* -------------------------Main----------------------------------- */
+
+// Yo dude this one sucked dicks, only one we couldnt get to work. Good luck!
+
+
+int main(void) {
+    DDPCONbits.JTAGEN = 0;
+    char micStr[3] = "Off";
+    int maxn = 0;
+    SSD_Init();
+    SWT_Init();
+    LCD_Init();
+    //RGBLED_Init();
+    LED_Init();
+    MIC_Init();
+    ADC_Init();
+    LCD_WriteStringAtPos("Team:38", 0, 0);
+
+    OpenCoreTimer(CORE_TICK_PERIOD);
+    mConfigIntCoreTimer(CT_INT_ON | CT_INT_PRIOR_2);
+    INTEnableSystemMultiVectoredInt();
+    
+    float resolution = SAMPLE_RATE / (float) N;
+    for (j = 0; j < N; j++) {
+        freqArray[j] = j * resolution;
+    }
+    
+    LCD_WriteStringAtPos("Team:38 Mic:", 0, 0);
+    LCD_WriteStringAtPos(micStr,0,12);
+    LCD_WriteStringAtPos("Signal: 0",1,0);
+    
+    while (1){
+        updateStr(micStr);
+        
+        if (delayval < 5){
+            delayval++;
+            if (maxn < max) { maxn = max;}           
+        }
+        else{
+        sprintf(str, "Signal:%i ", maxn, 0); //For debugging, CHANGE TO maxFreq
+        LCD_WriteStringAtPos(str, 1, 0);
+        delayval=0;
+        maxn = 0;
+        }
+        if (SWT_GetValue(0)) { //Reading value of SW0
+            //swtchVal= "Off";
+            mode = SAMPLE; //SPACE IS NEEDED AFTER N            
+        }
+        else {
+            mode = PAUSE; //Stop recording
+        }
+        
+        if (frequency <= 470) {
+            LED_SetGroupValue(0x00);
+        }
+        else if (frequency > 470 && frequency <= 540) {
+            LED_SetGroupValue(0x01);
+            delay_ms(20);
+        }
+        else if (frequency > 540 && frequency <= 610) {
+            LED_SetGroupValue(0x03);
+            delay_ms(20);
+        }
+        else if (frequency > 610 && frequency <= 680) {
+            LED_SetGroupValue(0x07);
+            delay_ms(20);
+        }
+        else if (frequency > 680 && frequency <= 750) {
+            LED_SetGroupValue(0x0F);
+            delay_ms(20);
+        }
+        else if (frequency > 750 && frequency <= 820) {
+            LED_SetGroupValue(0x1F);
+            delay_ms(20);
+        }
+        else if (frequency > 820 && frequency <= 890) {
+            LED_SetGroupValue(0x3F);
+            delay_ms(20);
+        } 
+        else if (frequency > 890 && frequency <= 960) {
+            LED_SetGroupValue(0x7F);
+            delay_ms(20);
+        } 
+        else if (frequency > 960) {
+            LED_SetGroupValue(0xFF);
+            delay_ms(20);
+        }
+        
+        mips_fft16(dout, din, fftc, scratch, log2N);
+        
+        for(k = 1; k < N / 2; k++){
+            magnitude = pow(dout[i].re,2) + pow(dout[i].im,2);
+            if (magnitude > hMagnitude) {
+                hMagnitude = magnitude;
+                indexMagnitude = i;
+            }
+        }
+        
+        fMax = indexMagnitude * 10000 / (N / 2);
+        
+        dig1 = (fMax % 100) % 10;
+        dig2 = (fMax % 100) / 10;
+        dig3 = (fMax % 1000) / 100;               
+        dig4 = (fMax / 1000);
+                    
+        if (fMax < 100){
+            SSD_WriteDigits(0,0,dig3,dig4,0,0,0,0);        //This if block
+        }                                               // prevents leading 0's
+        else if (fMax < 1000 && fMax >= 100){
+            SSD_WriteDigits(0,dig2,dig3,dig4,0,0,0,0);
+        }
+        else{
+            SSD_WriteDigits(dig1,dig2,dig3,dig4,0,0,0,0);
+        }
+//       
+//        setRGBLED(maxFreq);
+    }
+}
+ 
+void delay_ms(int ms) { //Software counter for debouncing.
+    int i, counter;
+    for (counter = 0; counter < ms; counter++) {
+        for (i = 0; i < 1426; i++) {
+        } //software delay 1 millisec
+    }
+}
+ 
+ void updateStr(char micStr[3]) {
+    micStr[1] = ' ';
+    micStr[2] = ' ';
+    micStr[3] = ' ';
+    if (SWT_GetValue(0)) {
+        micStr[1] = 'n';
+        micStr[2] = ' ';
+        
+    }
+    else {
+        micStr[1] = micStr[2] = 'f';
+    }
+    LCD_WriteStringAtPos(micStr,0,12);
+}
+// From Lecture Slide 9 Lines 122-
+/* Specify Interrupt Priority Level = 2, Vector 0 */
+void __ISR(_CORE_TIMER_VECTOR, ipl2) _CoreTimerHandler(void) {
+ 
+    // clear the interrupt flag
+    mCTClearIntFlag();
+    // update the period
+    UpdateCoreTimer(CORE_TICK_PERIOD);
+    if (mode == SAMPLE) {
+        //frequency = 0;
+        frequency = MIC_Val();
+        max=0;
+        for (i = 0; i < 255; i++) { //Cycle through array
+            UpdateCoreTimer(CORE_TICK_PERIOD);
+            array[i] = frequency;
+                if (i = 254) {
+                    for (x = 0; x < 64; x++) {
+                        if (array[x] > max) {
+                            max = array[x];
+                        }
+                    }
+                }
+            
+        }
+    }
+    din[sCounter].re = MIC_Val();
+    din[sCounter].im = 0;
+    sCounter++;
+    
+    if (sCounter >= N) {
+        sCounter = 0;
+    }
+ 
+}
