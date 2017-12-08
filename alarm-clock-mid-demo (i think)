@@ -1,0 +1,123 @@
+/*Program : Project 2
+ *Authors:  Dylan Martin and Dylan Leh
+ *Team #:   38
+ */
+#ifndef _SUPPRESS_PLIB_WARNING          //suppresses the warning about plib
+#define _SUPPRESS_PLIB_WARNING
+#endif
+#include <xc.h> 
+#include <stdio.h>
+#include <stdlib.h>
+#include <plib.h> 
+#include <math.h>
+#include <string.h>  
+#include "led.h"
+#include "lcd.h"
+#include "swt.h"
+#include "ssd.h"
+#include "config.h"
+#include "utils.h"
+
+#pragma config JTAGEN = OFF
+#pragma config FWDTEN = OFF
+
+#pragma config FPLLIDIV = DIV_2      
+#pragma config FPLLMUL = MUL_20      
+#pragma config FPLLODIV = DIV_1      
+#pragma config FNOSC = PRIPLL        
+#pragma config FSOSCEN = OFF         
+#pragma config POSCMOD = XT          
+#pragma config FPBDIV = DIV_8  
+//sets system clock to 80 MHz
+
+
+#define SYS_FREQ    (80000000L)
+#define CORE_TICK_PERIOD (SYS_FREQ /2000)
+
+//unsigned char A = 0;
+//unsigned char B = 0;
+//unsigned char C = 0;
+
+
+void convertToHex(int decVal, char hexStr[2]) {
+    int quotient;
+    int i=1,temp;
+    quotient = decVal;
+    hexStr[0] = '0';
+    hexStr[1] = '0';
+    hexStr[2] = '\0';
+        
+    while(quotient!=0) {
+        temp = quotient % 16;
+        //To convert integer into character
+        if( temp < 10)
+                temp =temp + 48; else
+                temp = temp + 55;
+        hexStr[i--]= temp;
+        quotient = quotient / 16;
+    }
+}
+
+void convertToArr(int decVal, int decStr[3]) {
+
+   int count = 0;    
+   int n = decVal;
+   decStr[0] = decStr[1] = decStr[2] = 0;
+
+   while (n != 0){
+       decStr[count] = n % 10;
+       n /= 10;
+       count++;
+   }
+}
+
+    
+int main() {
+    DDPCONbits.JTAGEN = 0; // Required to access LED0
+    SWT_Init();
+    LED_Init();
+    LCD_Init(); // Allows usage of lcd screen
+    LCD_WriteStringAtPos("Team:38", 0, 0);
+    LCD_WriteStringAtPos("Hex:0x",1,0);
+    SSD_Init();
+    int switchState[8];
+    int decVal = 0;
+    int c = 0;
+    int decStr[3] = {0,0,0};
+    char hexStr[2] = "00";
+    
+    while(1) {
+        decVal = 0;
+        for (c = 0;c <= 7; c++) {
+            switch(SWT_GetValue(c)) {
+                case 1:
+                    LED_SetValue(c,1);    //sets led corresponding to switch
+                    switchState[c] = 1;     // sets value of binary number
+                    break;
+                
+                case 0:
+                    LED_SetValue(c,0);
+                    switchState[c] = 0;
+                    break;  
+            }
+            decVal += switchState[c] * pow(2,c);        //Sums the binary number
+                                                        // of switches
+        } // end for
+        
+        convertToHex(decVal, hexStr);       //converts decVal to a hex string
+        LCD_WriteStringAtPos(hexStr, 1, 6);
+        convertToArr(decVal, decStr);        //allows access to digits of decVal
+        
+        if (decVal < 10){
+            SSD_WriteDigits(decStr[0],20,20,20,0,0,0,0);        //This if block
+        }                                               // prevents leading 0's
+        else if (decVal < 100 && decVal >= 10){
+            SSD_WriteDigits(decStr[0],decStr[1],20,20,0,0,0,0);
+        }
+        else{
+            SSD_WriteDigits(decStr[0],decStr[1],decStr[2],20,0,0,0,0);
+        }
+        
+    }
+
+}
