@@ -1,0 +1,347 @@
+/* 
+ * File:   proj5.c
+ * Author: ruinsane
+ *
+ * Created on November 28, 2017, 1:09 PM
+ */
+#ifndef _SUPPRESS_PLIB_WARNING          //suppresses the warning about plib
+#define _SUPPRESS_PLIB_WARNING
+#endif
+#include <xc.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <plib.h>
+#include <sys/attribs.h>
+#include "acl.h"            //Accelerometer
+#include "adc.h"            //Analog-to-Digital Converter
+#include "aic.h"            
+#include "btn.h"            //Buttons
+#include "rgbled.h"         //RGB LED
+#include "swt.h"            //Switches
+#include "srv.h"            //Servo motors
+#include "led.h"            //LEDs
+#include "lcd.h"            //LCD screen
+#include "ssd.h"            //Seven segment display
+#include "config.h"
+#include "utils.h"
+
+#define SYS_FREQ    (80000000L)     // 80MHz system clock
+#define CORE_TICK_PERIOD (SYS_FREQ/20) //100ms core tick
+
+#pragma config FPLLIDIV = DIV_2         // PLL Input Divider (2x Divider)
+#pragma config FPLLMUL = MUL_20         // PLL Multiplier (20x Multiplier)
+#pragma config FPLLODIV = DIV_1         // System PLL Output Clock Divider (PLL Divide by 1)
+#pragma config FNOSC = PRIPLL           // Oscillator Selection Bits (Primary Osc w/PLL (XT+,HS+,EC+PLL))
+#pragma config FSOSCEN = OFF            // Secondary Oscillator Enable (Disabled)
+#pragma config POSCMOD = XT             // Primary Oscillator Configuration (XT osc mode)
+#pragma config FPBDIV = DIV_8           // Peripheral Clock Divisor (Pb_Clk is Sys_Clk/8)
+
+unsigned char dig1 = 0;            // digigts 1-3 and decimal are used for the SSD
+unsigned char dig2 = 0;
+unsigned char dig3 = 0;
+unsigned char decimal = 0;
+
+unsigned int counter = 0;         // Keeps track of how much time has passed since the robot started moving;
+                                  // This value gets sent to the SSD
+
+char strMsg[80];                  // char array used when printing variables to the LCD screen
+
+int micVal, micNum = 0;           // value read from the microphone input; greatest value of a given number of micVal values
+int i, j;                         // used in loops throughout the project
+
+int pval, pvalSum = 0;            // pval stores the input signals from the Pmod one at a time, then shifts the bits 0-3times to the left
+                                  //pvalSum is the result of adding the shifted pval bits, resulting in a 4bit binary number
+                                  // this number is used by the "MOTOR_Stuff()" function to control the direction of the wheels
+                                  
+int RED, GRN, BLU = 0;            // Used for setting the RGB led
+
+int clapcount, claptimer = 0;     // clapcount keeps track of how many claps the system has heard. After 11 ticks of claptimer
+                                  // @100ms/tick courtesy of the core timer, resets the clapcount to 0.
+                                  
+int count = 0;                    // used to tell when the 'counter' variable listed above should start incrementing
+
+void initalize(){                 //All calls necessary for the program to function
+    DDPCONbits.JTAGEN = 0;        // Allows access to all LEDs
+    ACL_Init();
+    ADC_Init();
+    AIC_Init();
+    BTN_Init();
+    LCD_Init();
+    LED_Init();
+    MIC_Init();
+    RGBLED_Init();
+    SRV_Init();
+    SSD_Init();
+    SWT_Init();
+    PMODS_InitPin(1,1,1,0,0);   //Initializes PMod port B segments 1-4 as inputs
+    PMODS_InitPin(1,2,1,0,0);
+    PMODS_InitPin(1,3,1,0,0);
+    PMODS_InitPin(1,4,1,0,0);
+    RED = 255;                  //Sets the RGBLED to RED
+    GRN = BLU = 0;
+    RGBLED_SetValue(RED,GRN,BLU);
+    
+    LCD_WriteStringAtPos("Team:38 Mode:",0,0); // Writes team name to the LCD display
+}
+
+void delay_ms(int ms) {
+    // delays the program for ms milliseconds
+    int i, b;
+    for (b = 0; b < ms; b++) {
+        for (i = 0; i < 1427; i++) {
+        }
+    }
+}
+
+void MIC_Stuff() {            // Compares all values of micVal, finding the highest in a given list. Result stored in micNum
+    if (micVal <= 470) {
+        micNum = 0x00;
+    }
+    else if (micVal > 470 && micVal <= 540) {
+        if (micNum < 0x01) {
+            micNum = 0x01;
+        }
+    }
+    else if(micVal > 540 && micVal <= 610) {
+        if (micNum < 0x03) {
+            micNum = 0x03;
+        }
+    }
+    else if (micVal > 610 && micVal <= 680) {
+        if (micNum < 0x07) {
+            micNum = 0x07;
+        }
+    }
+    else if (micVal > 680 && micVal <= 750) {
+        if (micNum < 0x0F) {
+            micNum = 0x0F;
+        }
+    }
+    else if (micVal > 750 && micVal <= 820) {
+        if (micNum < 0x1F) {
+            micNum = 0x1F;
+        }
+    }
+    else if (micVal > 820 && micVal <= 890) {
+        if (micNum < 0x3F) {
+            micNum = 0x3F;
+        }
+    } 
+    else if (micVal > 890 && micVal <= 960) {
+        if (micNum < 0x7F) {
+            micNum = 0x7F;
+        }
+    } 
+    else if (micVal > 960) {
+        if (micNum < 0xFF) {
+            micNum = 0xFF;
+        }
+    }
+    
+}
+
+void MOTOR_Stuff() {
+    //228, 300, 380, 460,540 for right, reverse to forward. opposite for forward
+    //***IMPORTANT COMMENT. THESE NUMBERS WILL CHANGE DEPENDING ON YOUR MOTORS, FIND THE VALUE SET THAT
+    //CREATES A PWM OF 0.9ms, 1.5ms, AND 2.1ms. THESE CORRESPONT TO REVERSE, STOP, AND FORWARD RESPECTIVELY***
+    
+    count = 1;
+    for(j=0;j<4;j++){                     //Stores the pmod values in a 4bit binary number
+        pval=PMODS_GetValue(1,j+1)<< j;
+        pvalSum += pval;
+    }
+    
+    RED = BLU = GRN = 0;
+    
+    if (pvalSum == 0x0) {
+        //Stop
+        SRV_SetPulseMicroseconds2(380);
+        SRV_SetPulseMicroseconds1(380); //0000
+        RED = 255;
+    }
+    else if(pvalSum == 0xE){
+        // Pivot
+        SRV_SetPulseMicroseconds2(228);
+        SRV_SetPulseMicroseconds1(228);     //1110
+        BLU = GRN = 255;
+        count = 1;
+    }
+    else if(pvalSum == 0xC){
+    //stop one wheel, keep other full speed
+        SRV_SetPulseMicroseconds2(228);     //1100
+        SRV_SetPulseMicroseconds1(380);
+        BLU = GRN = 255;
+        count = 1;
+    }
+    else if(pvalSum == 0x8){
+    //one wheel full speed, one half speed
+        SRV_SetPulseMicroseconds2(228);     //1000
+        SRV_SetPulseMicroseconds1(460);
+        BLU = GRN = 255;
+        count = 1;
+    }
+    else if(pvalSum == 0x9){
+    //Straight
+        SRV_SetPulseMicroseconds2(228);     //1001
+        SRV_SetPulseMicroseconds1(540);
+        BLU = 255;
+        count = 1;
+    }
+    else if(pvalSum == 0xF){
+    //Reverse
+        SRV_SetPulseMicroseconds2(540);     //1111
+        SRV_SetPulseMicroseconds1(228);
+        BLU = 255;
+        count = 1;
+    }
+    else if(pvalSum == 0x7){
+    //pivot
+        SRV_SetPulseMicroseconds2(540);     //0111
+        SRV_SetPulseMicroseconds1(540);
+        BLU = GRN = 255;
+        count = 1;
+    }
+    else if(pvalSum == 0x3){
+    //one wheel stopped, one wheel full speed
+        SRV_SetPulseMicroseconds2(380);     //0011
+        SRV_SetPulseMicroseconds1(540);
+        BLU = GRN = 255;
+        count = 1;
+    }
+    else if(pvalSum == 0x1){
+    //one wheel full speed, one half speed
+        SRV_SetPulseMicroseconds2(300);     //0001
+        SRV_SetPulseMicroseconds1(540);
+        BLU = GRN = 255;
+        count = 1;
+    }
+    RGBLED_SetValue(RED,GRN,BLU);
+}
+
+
+
+
+int main(){
+    int buttonpress, buttonpress2, addone = 0;
+    initalize();
+    
+    OpenCoreTimer(CORE_TICK_PERIOD);    //Opens and initializes the core timer
+    mConfigIntCoreTimer(CT_INT_ON | CT_INT_PRIOR_2);
+    INTEnableSystemMultiVectoredInt();
+    INTEnableInterrupts();
+    
+    LCD_WriteStringAtPos("TST",0,13);
+
+    while (!BTN_GetValue(2)) { //test mode
+        micVal = MIC_Val();
+        MIC_Stuff();
+        LED_SetGroupValue(micNum);
+    }
+        
+        
+        
+    LCD_WriteStringAtPos("RDY",0,13);
+    
+    while(clapcount <= 1 && !BTN_GetValue(0)){ // ready mode, looknig for claps.
+        micVal = MIC_Val();
+        MIC_Stuff();
+        LED_SetGroupValue(micNum);
+        if (micNum > 0x3F && addone == 0) {
+                clapcount++;
+                addone = 1; //prevents one clap from being counted as two
+                delay_ms(50);
+        }
+        micNum = addone = 0;
+        
+    }
+    
+    LCD_WriteStringAtPos("RUN",0,13); // Run mode. BOOK IT BABY
+    LED_SetGroupValue(0x00);
+    count = 1;
+    while (1) {
+        count = 1;
+        pvalSum = 0;
+        MOTOR_Stuff();
+        delay_ms(10);
+        if (pvalSum == 0x00) { 
+            count = 0;
+            break;
+        }
+    }
+
+        delay_ms(5000);                       //Celebration
+        SRV_SetPulseMicroseconds2(540);
+        SRV_SetPulseMicroseconds1(540);
+        delay_ms(3000);
+        SRV_SetPulseMicroseconds2(228);
+        SRV_SetPulseMicroseconds1(228);
+        delay_ms(3000);
+        SRV_SetPulseMicroseconds2(380);
+        SRV_SetPulseMicroseconds1(380);        
+        int p = 0;
+        for (p; p < 4; p++) {
+            if (p == 0) {
+                LED_SetGroupValue(0b00011000);
+            } else if (p == 1) {
+                LED_SetGroupValue(0b00111100);
+            } else if (p == 2) {
+                LED_SetGroupValue(0b01111110);
+            } else if (p == 3) {
+                LED_SetGroupValue(0b11111111);
+            } else {
+                LED_SetGroupValue(0x00);
+            }
+
+            delay_ms(500);
+        }
+    
+}
+
+void setOnSSD(int num) {
+/* Breaks the axis component designated for the SSD into it's individual digits,
+and then sends those digits to be displayed on the SSD, disabling leading zeros. 
+*/
+    int dig1, dig2, dig3, dig4 = 0;
+  
+    dig1 = num % 10;            // decimal   
+    dig2 = (num % 100) / 10;    // ones
+    dig3 = (num % 1000) / 100;  // tens             
+    dig4 = num / 1000;          // hunds
+    
+    //SSD_WriteDigits only accepts values from 0 to 17. Any other value will result
+    //in the segement being deactived. Here, 20 is used to disable leading 0's.
+    
+    if (num < 10){
+        SSD_WriteDigits(dig1,0,20,20,0,1,0,0);        
+    }                                               
+    else if (num < 100 && num >= 10){
+        SSD_WriteDigits(dig1,dig2,20,20,0,1,0,0);
+    }
+    else if (num < 1000 && num >= 100){
+        SSD_WriteDigits(dig1,dig2,dig3,20,0,1,0,0);
+    }
+    else if (num > 1000){
+        SSD_WriteDigits(dig1,dig2,dig3,dig4,0,1,0,0);
+    }
+}
+
+void __ISR(_CORE_TIMER_VECTOR, ipl2) _CoreTimerHandler(void) {  
+    // clear the interrupt flag
+    mCTClearIntFlag();
+    // update the period
+    UpdateCoreTimer(CORE_TICK_PERIOD);
+    
+    if (count) {
+    counter++;
+    }
+    
+    setOnSSD(counter);
+    
+    if (clapcount == 1) { //if clap is heard, check if another clap is heard within one second. if not, disregard first clap
+        claptimer++;
+    }
+    if (claptimer >= 11) {
+        clapcount = 0;
+        claptimer = 0;
+    }
+}
