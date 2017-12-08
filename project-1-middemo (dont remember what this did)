@@ -1,0 +1,121 @@
+/*Program : Project 1
+ *Authors:  Matthew Matusek & Ryan Kabrick
+ *Team #:   21
+ *9/21/2017
+ *Description: This program should light up LD0 to LD7 to the left for one second
+ * when the left button is pressed. When the right button is pressed the LEDs will
+ * light up to the right.  When the center button is pressed the led should stop on
+ * the light that it was on.
+ */
+
+
+int global_data;
+
+
+
+static int ExampleLocalFunction(int param1, int param2) {
+    return 0;
+}
+
+
+#include <xc.h>
+#include <plib.h>
+#include <sys/attribs.h>
+#include "config.h"
+#include "stdio.h"
+#include "lcd.h"
+#include "led.h"
+#include "utils.h"
+#include "btn.h"
+
+
+#pragma configFNOSC = PRIPLL
+#pragma configPOSCMOD = XT 
+#pragma configFPLLIDIV = DIV_2 
+#pragma configFPLLMUL = MUL_20 
+#pragma configFPLLODIV = DIV_1 
+#pragma configFPBDIV = DIV_8
+//sets system clock to 80 MHz
+delay_s(int s){
+    int i, counter;
+    for (counter=0; counter<s; counter++){
+        for (i=0;i<100;i++){}
+        //delay 1 second
+    }
+}
+
+
+int LED_position = 0x01;
+int buttonLock = 0; 
+
+
+int main(void) {
+    DDPCONbits.JTAGEN = 0;
+   // int val;
+    TRISA = 0x8000;
+    ANSELA = 0x0;
+    LATA = LED_position;
+    //TRISBbits.TRISB0 = 1;
+    //ANSELBbits.ANSB0=0;
+    //val = PORTBbits.RB0;
+
+LCD_Init();
+LCD_WriteStringAtPos("Team 21",0,0);
+LOOP:BTN_Init();
+int buttonLock = 0; 
+while(1){
+if (BTN_GetValue('L') && !buttonLock){
+   delay_s(50);
+   while(1){
+   LED_position = LED_position<<1;
+   if (LED_position>128){
+       LED_position = 0x01;}
+   else if(BTN_GetValue('R') || BTN_GetValue('C')){
+       goto LOOP;}
+   
+   LATA = LED_position;
+   delay_s(100);}
+   buttonLock = 1;
+}
+
+else if (BTN_GetValue('R') && !buttonLock){
+   delay_s(50);
+   while(1){
+   LED_position = LED_position>>1;
+    if (LED_position<1){
+        LED_position = 0x80;
+        }
+    else if(BTN_GetValue('L') || BTN_GetValue('C')){
+       goto LOOP;}
+        delay_s(100);
+        LATA = LED_position;
+   buttonLock = 1;
+   }
+}
+else if (BTN_GetValue('C') && !buttonLock){
+   delay_s(50);
+   while(1){
+       LATA = LED_position;
+       goto LOOP;
+   }
+   buttonLock = 1;
+   }
+}
+
+if(buttonLock && !BTN_GetValue('C') && !BTN_GetValue('L') && !BTN_GetValue('R')){
+    delay_s(50);
+    LED_position = 0;
+    LATA = LED_position;
+    buttonLock = 0; //reset buttonlock if all switches are OFF and one of them was locked
+}
+
+     
+         
+    }
+
+
+
+/* *****************************************************************************
+ End of File
+ */
+
