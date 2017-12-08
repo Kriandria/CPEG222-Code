@@ -1,0 +1,339 @@
+/* 
+ * File:   project4.c
+ * Authors: Dylan Leh, Dylan Martin
+ *
+ * Created on October 31, 2017, 10:52 AM
+ * 
+ * 
+ * Goals of this project: 
+ *  –Visualize the accelerator values on LCD and SSD
+ *  –Set up the sensitivity of the accelerometer 
+ *  –Demonstrate the dominant axis using RGB LED
+ *  –Adjust acquisition rate of accelerometer values using Analog Input Control potentiometer
+ *  –Store 30 sets (x, y, and z) of  successive acceleration data into Flash memory.
+ *  –Read back the stored acceleration data set values from Flash and display them one set at 
+ *       a time on the LCD.  Use buttons to index through the data set. 
+ * 
+ * Currently, this project does all of the former not involving the boards flash memory.
+ * 
+ */
+#ifndef _SUPPRESS_PLIB_WARNING          //suppresses the warning about plib
+#define _SUPPRESS_PLIB_WARNING
+#endif
+#include <xc.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <plib.h>
+#include <sys/attribs.h>
+#include "acl.h"            //Accelerometer
+#include "adc.h"            //Analog-to-Digital Converter
+#include "aic.h"            
+#include "btn.h"            //On board buttons
+#include "i2c.h"            //i2c module, used by accelerometer
+#include "lcd.h"            // On board LCD screen
+#include "ssd.h"            // seven segment display control
+#include "swt.h"            // on Board switches
+#include "utils.h"
+#include "rgbled.h"         // on board rgb LED control
+
+#pragma config FPLLIDIV = DIV_2         // PLL Input Divider (2x Divider)
+#pragma config FPLLMUL = MUL_20         // PLL Multiplier (20x Multiplier)
+#pragma config FPLLODIV = DIV_1         // System PLL Output Clock Divider (PLL Divide by 1)
+#pragma config FNOSC = PRIPLL           // Oscillator Selection Bits (Primary Osc w/PLL (XT+,HS+,EC+PLL))
+#pragma config FSOSCEN = OFF            // Secondary Oscillator Enable (Disabled)
+#pragma config POSCMOD = XT             // Primary Oscillator Configuration (XT osc mode)
+#pragma config FPBDIV = DIV_8           // Peripheral Clock Divisor (Pb_Clk is Sys_Clk/8)
+
+#define SYS_FREQ    (80000000L)     // 80MHz system clock
+#define CORE_TICK_PERIOD (SYS_FREQ/2000) //1ms core tick
+/* The core tick period will be multiplied by a value between 100 and 1000,
+ * based off the value given by an on-board potentiometer. This results
+ * in a core tick period between 100ms and 1s (10 ticks/s to 1 tick/s) */
+ 
+
+ //Global Variables -----------------------------------------------------------
+char strMsg1[80];   //Contains string to be printed to the left half of the bottom row of LCD
+char strMsg2[80];   //Contains string to be printed to the right half of the bottom row of LCD
+unsigned char XYZ[80];  //Character array that contains values read from Accelerometer
+int valPot = 0;         //Value read from potentiometer [Note: pot reads from 0 to 1023]
+int delayval, delayval2 = 0; //Used to delay the refresh rate of the SSD and LCD, accordingly
+unsigned int buttonLock, buttonLock2 = 0; //Prevents buttons from triggering functions multiple times / press
+int bRange = 0;         //Holds the value that controls sensitivy of accelerometer
+int xVal, yVal, zVal;   //Holds the X, Y, and Z values read from accelerometer       
+enum mode {X,Y,Z};      //Mode determines order of XYZ values to be displayed on LCD and SSD
+int mode = X;           //If mode = X, xVal is displayed on bottom left of LCD, yVal on bottom right of LCD,
+                        //and zVal on SSD. For mode = Y, the corresponding oder is yVal, zVal, Xval.
+                        //mode = Z: zVal, xVal, yVal.
+//-----------------------------------------------------------------------------
+
+void initialize() {
+    /*Contains all function calls needed to initialize each used board component,
+    sets the top row of the LCD display, and gives valPot its first value
+    */
+    LCD_Init();
+    BTN_Init();
+    SWT_Init();
+    SSD_Init();
+    AIC_Init();
+    ACL_Init();
+    RGBLED_Init();
+    LCD_WriteStringAtPos("Team:38 SENS: 2G", 0, 0);
+    
+    valPot = ((AIC_Val() * 900/1023) + 100);  
+}
+
+void delay_ms(int ms) {
+    // delays the program for ms milliseconds
+    int i, b;
+    for (b = 0; b < ms; b++) {
+        for (i = 0; i < 1427; i++) {
+        }
+    }
+}
+
+void update_sens() {
+    /*If button 'U' is pressed, increase sensitivity from 2G to 4G, or 4G to 8G,
+    then update the value on the LCD. if sensitivity is already 8G, do nothing.
+    If button 'D' is pressed, decrease sensitivity from 8G to 4G, or 4G to 2G,
+    then update the value on the LCD. if sensitivity is already 2G, do nothing.
+    */
+    if (BTN_GetValue('U') && !buttonLock){
+        buttonLock = 1;
+        if (bRange < 2) {
+            bRange++;
+            ACL_SetRange(bRange);
+            if (bRange == 2) {
+                LCD_WriteStringAtPos("8G", 0, 14);
+            }
+            else if (bRange == 1) {
+                LCD_WriteStringAtPos("4G", 0, 14);
+            }
+        }
+    }
+    else if (BTN_GetValue('D') && !buttonLock){
+        buttonLock = 1;
+        if (bRange > 0) {
+            bRange--;
+            ACL_SetRange(bRange);
+            if (bRange == 0) {
+                LCD_WriteStringAtPos("2G", 0, 14);
+            }
+            else if (bRange == 1) {
+                LCD_WriteStringAtPos("4G", 0, 14);
+            }
+        }
+    }
+    if(buttonLock && !BTN_GetValue('U') && !BTN_GetValue('D')){
+        delay_ms(20);
+        buttonLock = 0; //unlock buttons if all off
+    }
+}
+
+void rotate_vals() {
+/* If button 'R' is pressed, roatate the XYZ values clockwise on the LCD and SSD.
+Eg: If the current position is  {X       Y}  change to {Z        X}
+                                {    Z    },           {    Y     }
+If button 'L' is pressed, rotate the XYZ values counterclockwise.
+Lines 146 to 174 determine the position of the values.
+Lines 176 to 193 print the values to the LCD screen.
+*/
+    
+    if (BTN_GetValue('R') && !buttonLock2){
+        buttonLock2 = 1;
+        if (mode == X) {
+            mode = Z;
+        }
+        else if (mode == Y) {
+            mode = X;
+        }
+        else if (mode == Z) {
+            mode = Y;
+        }
+        
+    }
+    else if (BTN_GetValue('L') && !buttonLock2){
+        buttonLock2 = 1;
+        if (mode == X) {
+            mode = Y;
+        }
+        else if (mode == Y) {
+            mode = Z;
+        }
+        else if (mode == Z) {
+            mode = X;
+        }
+    }
+    if(buttonLock2 && !BTN_GetValue('R') && !BTN_GetValue('L')){
+        delay_ms(20);
+        buttonLock2 = 0; //unlock buttons if all off
+    }
+
+    if (mode == X){
+                sprintf(strMsg1, "X: %04d", xVal);
+                LCD_WriteStringAtPos(strMsg1, 1, 0);
+                sprintf(strMsg2, "Y: %04d", yVal);
+                LCD_WriteStringAtPos(strMsg2, 1, 8);     
+    }
+    else if (mode == Y) {
+                sprintf(strMsg1, "Y: %04d", yVal);
+                LCD_WriteStringAtPos(strMsg1, 1, 0);
+                sprintf(strMsg2, "Z: %04d", zVal);
+                LCD_WriteStringAtPos(strMsg2, 1, 8);     
+    }
+    else if (mode == Z) {
+                sprintf(strMsg1, "Z: %04d", zVal);
+                LCD_WriteStringAtPos(strMsg1, 1, 0);
+                sprintf(strMsg2, "X: %04d", xVal);
+                LCD_WriteStringAtPos(strMsg2, 1, 8);     
+    }
+}
+
+void twosComp(){
+/* If switch(0) is active, then change accelerometer values to read from 0 -> 4095
+to -2048 -> 2047
+*/
+    if (SWT_GetValue(0)) {
+        if (xVal > 2048){
+            xVal = (xVal - 4096);
+        }
+        else if (yVal > 2048){
+            yVal = (yVal - 4096);
+        }
+        else if (zVal > 2048){
+            zVal = (zVal - 4096);
+        }
+    }
+}
+
+
+void setOnSSD(int num) {
+/* Breaks the axis component designated for the SSD into it's individual digits,
+and then sends those digits to be displayed on the SSD, disabling leading zeros. 
+If the value is less than -999, then display '-FFF' on the display.
+*/
+    int dig1, dig2, dig3, dig4, negative = 0;
+    
+    if (num < 0) {
+        //Make the number positive if it is not. Allows ease of use of modular mathematics
+        negative = 1;
+        num *= -1;
+    }
+    
+    dig1 = (num % 100) % 10;        // ones
+    dig2 = (num % 100) / 10;        //tens
+    dig3 = (num % 1000) / 100;      // hunds             
+    dig4 = (num / 1000);            //thous
+    
+    //SSD_WriteDigits only accepts values from 0 to 17. Any other value will result
+    //in the segement being deactived. Here, 20 is used to disable leading 0's.
+    if (negative == 0) {
+        if (num < 10){
+            SSD_WriteDigits(dig1,20,20,20,0,0,0,0);        
+        }                                               
+        else if (num < 100 && num >= 10){
+            SSD_WriteDigits(dig1,dig2,20,20,0,0,0,0);
+        }
+        else if (num < 1000 && num >= 100){
+            SSD_WriteDigits(dig1,dig2,dig3,20,0,0,0,0);
+        }
+        else if (num > 1000){
+            SSD_WriteDigits(dig1,dig2,dig3,dig4,0,0,0,0);
+        }
+    }
+    else if (negative == 1) {
+        if (num < 10){
+            SSD_WriteDigits(dig1,17,20,20,0,0,0,0); //17 containsthe value for '-'
+        }                                               
+        else if (num < 100 && num >= 10){
+            SSD_WriteDigits(dig1,dig2,17,20,0,0,0,0);
+        }
+        else if (num < 1000 && num >= 100){
+            SSD_WriteDigits(dig1,dig2,dig3,17,0,0,0,0);
+        }
+        else if (num > 1000){
+            SSD_WriteDigits(15,15,15,17,0,0,0,0);
+        }
+    }
+}
+
+void RGB_Stuff(){
+/* Determines the axis with the greatest magnitude, then sets the RBGled accordingly.
+if x is greatest, set to red. if y is greatest, set to green. if z is greatest, set to blue.
+*/
+    if(abs(xVal) >= abs(yVal) && abs(xVal) >= abs(zVal)){
+        RGBLED_SetValue(0xFF,0,0);
+    }
+    else if (abs(yVal) >= abs(xVal) && abs(yVal) >= abs(zVal)){
+        RGBLED_SetValue(0,0xFF,0);
+    }
+    else if (abs(zVal) >= abs(xVal) && abs(zVal) >= abs(yVal)){
+        RGBLED_SetValue(0,0,0xFF);
+    }
+}
+
+void main() {
+    initialize();
+    
+    OpenCoreTimer(CORE_TICK_PERIOD);    //Opens and initializes the core timer
+    mConfigIntCoreTimer(CT_INT_ON | CT_INT_PRIOR_2);
+    INTEnableSystemMultiVectoredInt();
+    
+    while (1) {
+        
+        if (delayval < 100){ //prevents the board from trying to update itself consantly
+            delayval++;      //during every run through the loop
+        }
+        else {
+            delayval2++;    //Counter for refreshing LCD, see line 314
+            delayval = 0; 
+            
+            update_sens();  //Update senesitivity of accelerometer, if needed
+            
+            twosComp();     //Change to negative quantities, if needed
+            
+            rotate_vals();  //Rotate the XYZ axis placements, if needed
+   
+            if (mode == X) {    //Display the correct Axis on the SSD
+                setOnSSD(zVal);
+            }
+            else if (mode == Y) {
+                setOnSSD(xVal);
+            }
+            else if (mode == Z) {
+                setOnSSD(yVal);
+            }
+            
+            RGB_Stuff();    //Set the value of the RGBLED
+            
+            //prevents left-behind digits on the LCD screen, Eg: value changes
+            //from -2013 to 0034. The 3 will not be rewritten by 0034, resulting in 00343.
+            if (delayval2 == 1000) { //This occasionally wipes the entire bottom row,
+                delayval2 = 0;       //removing left-over digits.     
+                LCD_WriteStringAtPos("                   ", 1, 0);
+                
+            }  
+            
+        }
+
+    } //End while
+
+}// End main
+
+
+
+void __ISR(_CORE_TIMER_VECTOR, ipl2) _CoreTimerHandler(void) {
+ 
+    // clear the interrupt flag
+    mCTClearIntFlag();
+    
+    valPot = ((AIC_Val()*900/1023) + 100); //Read value from potentiometer
+    // update the period
+    UpdateCoreTimer(CORE_TICK_PERIOD * valPot);
+    
+    ACL_ReadRawValues(&XYZ); //Reads values from ACL, stores them in XYZ[]
+    xVal = yVal = zVal = 0;
+    xVal = (XYZ[0] << 4) + (XYZ[1] >> 4);   //store axis values in corresponding values
+    yVal = (XYZ[2] << 4) + (XYZ[3] >> 4);
+    zVal = (XYZ[4] << 4) + (XYZ[6] >> 4);
+ 
+}
