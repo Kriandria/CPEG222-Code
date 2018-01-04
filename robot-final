@@ -141,7 +141,7 @@ void MIC_Stuff() {            // Compares all values of micVal, finding the high
 }
 
 void MOTOR_Stuff() {
-    //228, 300, 380, 460,540 for right, reverse to forward. opposite for forward
+    //228, 300, 380, 460,540 for right, reverse to forward. opposite for left
     //***IMPORTANT COMMENT. THESE NUMBERS WILL CHANGE DEPENDING ON YOUR MOTORS, FIND THE VALUE SET THAT
     //CREATES A PWM OF 0.9ms, 1.5ms, AND 2.1ms. THESE CORRESPONT TO REVERSE, STOP, AND FORWARD RESPECTIVELY***
     
